@@ -33,11 +33,11 @@ else:
 def detect_rectangles(corners:list()):
     list_of_point_pairs = []
     ## Create a list of point pairs
-    for point_pairs in itertools.combinations(list_of_corners,2):
+    for point_pairs in itertools.combinations(corners,2):
         p1,p2= point_pairs[0],point_pairs[1]
         dist = np.linalg.norm(p1-p2)
         if(dist>50):
-            slope = (p2[1]-p1[1])/(p2[0]-p1[0])
+            slope = 0
             center =  np.array([(p1[0]+p2[0])/2,(p1[1]+p2[1])/2])
             list_of_point_pairs.append([p1,p2,slope,center,dist])
                
@@ -166,6 +166,7 @@ def process_video():
     frames = []
     out = cv.VideoWriter('outpy.avi',cv.VideoWriter_fourcc('M','J','P','G'), 26, (1920,1080))
     testudo  =cv.imread('testudo.jpg')
+    previous_tag=None
     while(nonoise_vid.isOpened()):
         # nonoise_vid.read() methods returns a tuple, first element is a bool 
         # and the second is frame
@@ -187,7 +188,7 @@ def process_video():
                 x,y = i.ravel()
                 list_of_corners.append(np.array([x,y]))
             ## Given the list of corners, fit quads to the images
-            rectangles,d=detect_rectangles(corners)
+            rectangles,d=detect_rectangles(list_of_corners)
             tags = []
             ## For every quad calculate the Homography matrix that converts the world point to the camera plane
             for i, rectangle in enumerate(rectangles):
@@ -214,6 +215,7 @@ def process_video():
                     continue
                 if(tag[3]!=7):
                     continue
+                previous_tag = tag
                 #Resize the image to fit the size of the AR Tag
                 testudo_rot = np.rot90(testudo,tag[2]//90,(0,1))
                 # Rotate the image so that its aligned with the tags ori
@@ -230,7 +232,24 @@ def process_video():
                 
                 ## If multi tag environment remove break
                 break
-        
+            else:
+                if(previous_tag):
+                    tag = previous_tag 
+                    testudo_rot = np.rot90(testudo,tag[2]//90,(0,1))
+                    # Rotate the image so that its aligned with the tags ori
+                    testudo_rot = cv.resize(testudo_rot,(tag[4],tag[4]))
+                    # Construct a clean white image the same size as the tag to clear the area
+                    clear = np.uint8(np.ones((tag[4],tag[4],3)))*255
+                    ## Warp the clearing image to the tags. 
+                    clear = Warping(img, tag[5],(tag[4],tag[4]),clear)
+                    # Finally warp the testudo image onto the frame
+                    final = Warping(clear,tag[5], (tag[4],tag[4]),testudo_rot)
+                    ## Smoothen out the image to eliminate holes
+                    final = cv.medianBlur(final,3)
+                    out.write(final)
         else:
             break
         print(len(frames)) 
+        
+if __name__=="__main__":
+    process_video()
