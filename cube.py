@@ -141,32 +141,32 @@ def decode_tag(tag):
 
 # %%
 ## Warp the image with the given size and template image
-def Warping(im, H, size, tes = None):
+def Warping(src, homography, size, template = None):
     Yt, Xt = np.indices((size[0], size[1]))
     ## Create an array with values equal to coordinates of the point
     cam_pts = np.stack((Xt.ravel(), Yt.ravel(), np.ones(Xt.size)))
-    H_inv = np.linalg.inv(H)
+    h_inv = np.linalg.inv(homography)
     
     ## Find the transformation that maps the camera point to the world point
-    cam_pts = H_inv.dot(cam_pts)
+    cam_pts = h_inv.dot(cam_pts)
     ## Normalize so that the Z is 1
     cam_pts /= cam_pts[2,:]
 
     ## Floor the float values to a interger value
     Xi, Yi = cam_pts[:2,:].astype(int)
     # padding
-    Xi[Xi >=  im.shape[1]] = im.shape[1]
+    Xi[Xi >=  src.shape[1]] = src.shape[1]
     Xi[Xi < 0] = 0
-    Yi[Yi >=  im.shape[0]] = im.shape[0]
+    Yi[Yi >=  src.shape[0]] = src.shape[0]
     Yi[Yi < 0] = 0
     ## If a template image is provided then map that to world frame
-    if (type(tes)==np.ndarray):
-        im[Yi, Xi, :] = tes[Yt.ravel(), Xt.ravel(), :]
-        return im
+    if (type(template)==np.ndarray):
+        src[Yi, Xi, :] = template[Yt.ravel(), Xt.ravel(), :]
+        return src
     ## Map the world frame to the given the camera frame
     else:
         warped_image = np.zeros((size[0],size[1], 3))
-        warped_image[Yt.ravel(), Xt.ravel(), :]= im[Yi, Xi, :]
+        warped_image[Yt.ravel(), Xt.ravel(), :]= src[Yi, Xi, :]
         return warped_image
 # %%
  ## Sort the points so that the are in anti clockwise 
@@ -195,6 +195,7 @@ def paste_img(tag_info,img,src):
     return final
 
 def calculate_rotation(K,homography):
+    
     B_tilde = np.linalg.inv(K)@homography
     h1,h2,h3 = np.array_split(homography,3,axis=1)
     lb = (np.linalg.norm(np.linalg.inv(K)@h1)+np.linalg.norm(np.linalg.inv(K)@h2))/2
@@ -208,11 +209,10 @@ def calculate_rotation(K,homography):
     b3 = np.cross(b1.T,b2.T)
     # r3 = b3/np.linalg.norm(b3)
     r1, r2, r3 = b1, b2, b3
+    rotation_matrix = np.hstack((r1,r2,r3.T))
 
-    rotation_matrix = np.hstack((r1,r2,r3.T,t))
-
-    perspective_transform = (K@rotation_matrix)
-    
+    perspective_transform = (K@np.hstack((rotation_matrix,t)))
+    print(rotation_matrix,t)
     return t,rotation_matrix,perspective_transform
     
 
@@ -239,7 +239,7 @@ def process_video():
             gray = cv.cvtColor(img_modify,cv.COLOR_BGR2GRAY) #convert to grayscale
 
             #Perform corner detection
-            corners = cv.goodFeaturesToTrack(gray,30,0.1,35) ## only 30 points are selected
+            corners = cv.goodFeaturesToTrack(gray,30,0.01,35) ## only 30 points are selected
             corners = np.int0(corners)
             list_of_corners = []
             for i in corners:
@@ -275,20 +275,22 @@ def process_video():
                     continue
                 if(tag[2]!=7):
                     continue
-                cv.imshow("cube",warped_img)
-                cv.waitKey()
-                cv.destroyAllWindows()
-                points_to_project = np.float32([[0, 0, 0],[tag[3], 0, 0],[tag[3], tag[3], 0], [0, tag[3], 0],[0, 0, 0], 
-                                                    [0, 0, -tag[3]], [tag[3], 0, -tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]], [tag[3], tag[3], -tag[3]],
-                                                    [tag[3],tag[3],0],[tag[3],tag[3],-tag[3]],[tag[3],0,-tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]],[0, 0, -tag[3]]])
-                    # points = np.array([[[0,0,0],[tag[3],0,0],[tag[3],tag[3],0],[0,tag[3],0],\
-                # [0,0,-1],[tag[3],0,-1],[tag[3],tag[3],-1],[0,tag[3],-1]]],dtype = np.float64)
-                projected_corners,_ = cv.projectPoints(points_to_project, rvec, tvec, K, np.zeros((1, 4)))
+                # cv.imshow("cube",warped_img)
+                # cv.waitKey()
+                # cv.destroyAllWindows()
+                # points_to_project = np.float32([[0, 0, 0],[tag[3], 0, 0],[tag[3], tag[3], 0], [0, tag[3], 0],[0, 0, 0], 
+                #                                     [0, 0, -tag[3]], [tag[3], 0, -tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]], [tag[3], tag[3], -tag[3]],
+                #                                     [tag[3],tag[3],0],[tag[3],tag[3],-tag[3]],[tag[3],0,-tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]],[0, 0, -tag[3]]])
+                points = np.array([[[0,0,0],[tag[3],0,0],[tag[3],tag[3],0],[0,tag[3],0],\
+                [0,0,-tag[3]],[tag[3],0,-tag[3]],[tag[3],tag[3],-tag[3]],[0,tag[3],-tag[3]]]],dtype = np.float64)
+                projected_corners,_ = cv.projectPoints(points, rvec, tvec, K, np.zeros((1, 4)))
+                projected_corners = projected_corners.astype(int)
                 img_rect = np.copy(img)
-                img_rect = plot_polygon(img_rect,projected_corners)
+                img_rect = cv.polylines(img,[projected_corners],True,(0,255,255),4)
+                # img_rect = plot_polygon(img_rect,projected_corners)
                 # out.write(final)
                 cv.imshow("cube",img_rect)
-                cv.waitKey()
+                cv.waitKey(100000)
                 cv.destroyAllWindows()
                 break
             else:
