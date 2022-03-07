@@ -161,6 +161,22 @@ def sort_points(points):
     return [left_most,bottommost,right_most,topmost]
     pass
     
+    
+def paste_img(tag_info,img,src):
+    tag = tag_info 
+    img_rot = np.rot90(img,tag[2]//90,(0,1))
+    # Rotate the image so that its aligned with the tags ori
+    img_rot = cv.resize(img_rot,(tag[4],tag[4]))
+    # Construct a clean white image the same size as the tag to clear the area
+    clear = np.uint8(np.ones((tag[4],tag[4],3)))*255
+    ## Warp the clearing image to the tags. 
+    clear = Warping(src, tag[5],(tag[4],tag[4]),clear)
+    # Finally warp the testudo image onto the frame
+    final = Warping(clear,tag[5], (tag[4],tag[4]),img_rot)
+    ## Smoothen out the image to eliminate holes
+    final = cv.medianBlur(final,3)
+    return final
+    
 # %%
 def process_video():
     frames = []
@@ -181,7 +197,7 @@ def process_video():
             gray = cv.cvtColor(img_modify,cv.COLOR_BGR2GRAY) #convert to grayscale
 
             #Perform corner detection
-            corners = cv.goodFeaturesToTrack(gray,30,0.01,35) ## only 30 points are selected
+            corners = cv.goodFeaturesToTrack(gray,30,0.1,35) ## only 30 points are selected
             corners = np.int0(corners)
             list_of_corners = []
             for i in corners:
@@ -216,37 +232,12 @@ def process_video():
                 if(tag[3]!=7):
                     continue
                 previous_tag = tag
-                #Resize the image to fit the size of the AR Tag
-                testudo_rot = np.rot90(testudo,tag[2]//90,(0,1))
-                # Rotate the image so that its aligned with the tags ori
-                testudo_rot = cv.resize(testudo_rot,(tag[4],tag[4]))
-                # Construct a clean white image the same size as the tag to clear the area
-                clear = np.uint8(np.ones((tag[4],tag[4],3)))*255
-                ## Warp the clearing image to the tags. 
-                clear = Warping(img, tag[5],(tag[4],tag[4]),clear)
-                # Finally warp the testudo image onto the frame
-                final = Warping(clear,tag[5], (tag[4],tag[4]),testudo_rot)
-                ## Smoothen out the image to eliminate holes
-                final = cv.medianBlur(final,3)
+                final = paste_img(tag,testudo,img)
                 out.write(final)
-                
-                ## If multi tag environment remove break
                 break
             else:
                 if(previous_tag):
-                    tag = previous_tag 
-                    testudo_rot = np.rot90(testudo,tag[2]//90,(0,1))
-                    # Rotate the image so that its aligned with the tags ori
-                    testudo_rot = cv.resize(testudo_rot,(tag[4],tag[4]))
-                    # Construct a clean white image the same size as the tag to clear the area
-                    clear = np.uint8(np.ones((tag[4],tag[4],3)))*255
-                    ## Warp the clearing image to the tags. 
-                    clear = Warping(img, tag[5],(tag[4],tag[4]),clear)
-                    # Finally warp the testudo image onto the frame
-                    final = Warping(clear,tag[5], (tag[4],tag[4]),testudo_rot)
-                    ## Smoothen out the image to eliminate holes
-                    final = cv.medianBlur(final,3)
-                    out.write(final)
+                    final = paste_img(previous_tag,testudo,img)
         else:
             break
         print(len(frames)) 

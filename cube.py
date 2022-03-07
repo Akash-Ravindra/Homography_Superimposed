@@ -33,11 +33,11 @@ else:
 def detect_rectangles(corners:list()):
     list_of_point_pairs = []
     ## Create a list of point pairs
-    for point_pairs in itertools.combinations(list_of_corners,2):
+    for point_pairs in itertools.combinations(corners,2):
         p1,p2= point_pairs[0],point_pairs[1]
         dist = np.linalg.norm(p1-p2)
         if(dist>50):
-            slope = (p2[1]-p1[1])/(p2[0]-p1[0])
+            slope = 0
             center =  np.array([(p1[0]+p2[0])/2,(p1[1]+p2[1])/2])
             list_of_point_pairs.append([p1,p2,slope,center,dist])
                
@@ -59,12 +59,29 @@ def detect_rectangles(corners:list()):
 
 # %%
 def plot_polygon(img, lov):
+    print(lov)
     for i in lov:
+        print(i)
         pts = np.array(i, np.int32)
         pts = pts.reshape((-1,1,2))
         img_rect = cv.polylines(img,[pts],True,(0,255,255))
     return img_rect
-
+def plot_circles(img, lop):
+    img_rect = np.copy(img)
+    lop = np.asarray(lop)
+    center_coordinates = (120, 50)
+    # Radius of circle
+    radius = 20
+    # Blue color in BGR
+    color = (255, 0, 0)
+    # Line thickness of 2 px
+    thickness = 2
+    # print(lop)
+    for i in lop[0]:
+        i = tuple(i[0].astype(int).tolist())
+        print(i)
+        img_rect = cv.circle(img_rect,i,2,(0,255,0),2)
+    return img_rect
 # %%
 ## Calculate Homography
 def calculate_homography(world_corners,image_corner):
@@ -161,11 +178,53 @@ def sort_points(points):
     return [left_most,bottommost,right_most,topmost]
     pass
     
+    
+def paste_img(tag_info,img,src):
+    tag = tag_info 
+    img_rot = np.rot90(img,tag[2]//90,(0,1))
+    # Rotate the image so that its aligned with the tags ori
+    img_rot = cv.resize(img_rot,(tag[4],tag[4]))
+    # Construct a clean white image the same size as the tag to clear the area
+    clear = np.uint8(np.ones((tag[4],tag[4],3)))*255
+    ## Warp the clearing image to the tags. 
+    clear = Warping(src, tag[5],(tag[4],tag[4]),clear)
+    # Finally warp the testudo image onto the frame
+    final = Warping(clear,tag[5], (tag[4],tag[4]),img_rot)
+    ## Smoothen out the image to eliminate holes
+    final = cv.medianBlur(final,3)
+    return final
+
+def calculate_rotation(K,homography):
+    B_tilde = np.linalg.inv(K)@homography
+    h1,h2,h3 = np.array_split(homography,3,axis=1)
+    lb = (np.linalg.norm(np.linalg.inv(K)@h1)+np.linalg.norm(np.linalg.inv(K)@h2))/2
+    lb = 1/lb
+    if(np.linalg.det(B_tilde)<0):
+        B = -lb*B_tilde
+    else:
+        B = lb*B_tilde
+    b1,b2,t = np.array_split(B,3,axis=1)
+    # r1,r2 = b1/np.linalg.norm(b1),b2/np.linalg.norm(b2)
+    b3 = np.cross(b1.T,b2.T)
+    # r3 = b3/np.linalg.norm(b3)
+    r1, r2, r3 = b1, b2, b3
+
+    rotation_matrix = np.hstack((r1,r2,r3.T,t))
+
+    perspective_transform = (K@rotation_matrix)
+    
+    return t,rotation_matrix,perspective_transform
+    
+
 # %%
 def process_video():
     frames = []
     out = cv.VideoWriter('outpy.avi',cv.VideoWriter_fourcc('M','J','P','G'), 26, (1920,1080))
     testudo  =cv.imread('testudo.jpg')
+    previous_tag=None
+    K = np.array([[1346.100595,0,932.1633975],
+    [0,1355.933136,654.8986796],
+    [0,0,1]])
     while(nonoise_vid.isOpened()):
         # nonoise_vid.read() methods returns a tuple, first element is a bool 
         # and the second is frame
@@ -180,16 +239,17 @@ def process_video():
             gray = cv.cvtColor(img_modify,cv.COLOR_BGR2GRAY) #convert to grayscale
 
             #Perform corner detection
-            corners = cv.goodFeaturesToTrack(gray,30,0.01,35) ## only 30 points are selected
+            corners = cv.goodFeaturesToTrack(gray,30,0.1,35) ## only 30 points are selected
             corners = np.int0(corners)
             list_of_corners = []
             for i in corners:
                 x,y = i.ravel()
                 list_of_corners.append(np.array([x,y]))
             ## Given the list of corners, fit quads to the images
-            rectangles,d=detect_rectangles(corners)
+            rectangles,d=detect_rectangles(list_of_corners)
             tags = []
             ## For every quad calculate the Homography matrix that converts the world point to the camera plane
+
             for i, rectangle in enumerate(rectangles):
                 #### MAKE IT TO THE CLOSEST MULTIPLE OF 8 the side length of tag
                 max_frame_size = int(d[i][1])+(int(d[i][1])%8)
@@ -199,6 +259,7 @@ def process_video():
                 rectangle = sort_points(rectangle)
                 ## Calculate the homography using SVD
                 homo = calculate_homography(rectangle[::-1],PoF)
+                tvec,rvec,_ = calculate_rotation(K,np.linalg.inv(homo))
                 try:
                     warped_img = np.uint8(Warping(img,homo,(max_frame_size,max_frame_size)))
                     ## Decode the same image assuming its a TAG
@@ -206,31 +267,48 @@ def process_video():
                 except:
                     continue
                 ## Add it to the list of tags
-                tags.append([rectangle,msg,ori,idx,max_frame_size,homo])
+                tags.append([msg,ori,idx,max_frame_size,homo])
                 
                 ## For every quad that returned a valid tag info superimpose a image
                 tag = tags[-1]
-                if(np.isnan(tag[1]).any() or type(tag[2])==type(None) or type(tag[3])==type(None)):
+                if(np.isnan(tag[0]).any() or type(tag[1])==type(None) or type(tag[2])==type(None)):
                     continue
-                if(tag[3]!=7):
+                if(tag[2]!=7):
                     continue
-                #Resize the image to fit the size of the AR Tag
-                testudo_rot = np.rot90(testudo,tag[2]//90,(0,1))
-                # Rotate the image so that its aligned with the tags ori
-                testudo_rot = cv.resize(testudo_rot,(tag[4],tag[4]))
-                # Construct a clean white image the same size as the tag to clear the area
-                clear = np.uint8(np.ones((tag[4],tag[4],3)))*255
-                ## Warp the clearing image to the tags. 
-                clear = Warping(img, tag[5],(tag[4],tag[4]),clear)
-                # Finally warp the testudo image onto the frame
-                final = Warping(clear,tag[5], (tag[4],tag[4]),testudo_rot)
-                ## Smoothen out the image to eliminate holes
-                final = cv.medianBlur(final,3)
-                out.write(final)
-                
-                ## If multi tag environment remove break
+                cv.imshow("cube",warped_img)
+                cv.waitKey()
+                cv.destroyAllWindows()
+                points_to_project = np.float32([[0, 0, 0],[tag[3], 0, 0],[tag[3], tag[3], 0], [0, tag[3], 0],[0, 0, 0], 
+                                                    [0, 0, -tag[3]], [tag[3], 0, -tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]], [tag[3], tag[3], -tag[3]],
+                                                    [tag[3],tag[3],0],[tag[3],tag[3],-tag[3]],[tag[3],0,-tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]],[0, 0, -tag[3]]])
+                    # points = np.array([[[0,0,0],[tag[3],0,0],[tag[3],tag[3],0],[0,tag[3],0],\
+                # [0,0,-1],[tag[3],0,-1],[tag[3],tag[3],-1],[0,tag[3],-1]]],dtype = np.float64)
+                projected_corners,_ = cv.projectPoints(points_to_project, rvec, tvec, K, np.zeros((1, 4)))
+                img_rect = np.copy(img)
+                img_rect = plot_polygon(img_rect,projected_corners)
+                # out.write(final)
+                cv.imshow("cube",img_rect)
+                cv.waitKey()
+                cv.destroyAllWindows()
                 break
-        
+            else:
+                if(previous_tag):
+                    tag = previous_tag
+                    points_to_project = np.float32([[0, 0, 0],[tag[3], 0, 0],[tag[3], tag[3], 0], [0, tag[3], 0],[0, 0, 0], 
+                                                    [0, 0, -tag[3]], [tag[3], 0, -tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]], [tag[3], tag[3], -tag[3]],
+                                                    [tag[3],tag[3],0],[tag[3],tag[3],-tag[3]],[tag[3],0,-tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]],[0, 0, -tag[3]]])
+                    # points = np.array([[[0,0,0],[tag[3],0,0],[tag[3],tag[3],0],[0,tag[3],0],\
+                    # [0,0,-1],[tag[3],0,-1],[tag[3],tag[3],-1],[0,tag[3],-1]]],dtype = np.float64)
+                    projected_corners,_ = cv.projectPoints(points_to_project, rvec, tvec, K, np.zeros((1, 4)))
+                    img_rect = np.copy(img)
+                    img_rect = plot_polygon(img_rect,projected_corners)
+                    # out.write(final)
+                    cv.imshow("cube",img_rect)
+                    cv.waitKey()
+                    cv.destroyAllWindows()
         else:
             break
         print(len(frames)) 
+        
+if __name__=="__main__":
+    process_video()
