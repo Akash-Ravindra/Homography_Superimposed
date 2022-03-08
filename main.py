@@ -1,11 +1,9 @@
 # %%
 import cv2 as cv
-
-from matplotlib import pyplot as plt
-import networkx as nx
 import itertools
 import numpy as np
-import math
+import argparse
+
 
 # %%
 nonoise_vid = cv.VideoCapture('./1tagvideo.mp4')
@@ -125,9 +123,9 @@ def decode_tag(tag):
 # %%
 ## Warp the image with the given size and template image
 def Warping(im, H, size, tes = None):
-    Yt, Xt = np.indices((size[0], size[1]))
+    Y, X = np.indices((size[0], size[1]))
     ## Create an array with values equal to coordinates of the point
-    cam_pts = np.stack((Xt.ravel(), Yt.ravel(), np.ones(Xt.size)))
+    cam_pts = np.stack((X.ravel(), T.ravel(), np.ones(X.size)))
     H_inv = np.linalg.inv(H)
     
     ## Find the transformation that maps the camera point to the world point
@@ -176,7 +174,19 @@ def paste_img(tag_info,img,src):
     ## Smoothen out the image to eliminate holes
     final = cv.medianBlur(final,3)
     return final
+def get_inputs():
+    parser = argparse.ArgumentParser(description='Projects a 3D cube onto an AR Tag',usage='\t\t\tpython %(prog)s -d 1 -\t\t\tDebug level 1\n\t\t\tpython %(prog)s -wv 1 \t\tOnly view each frame without saving video\n\t\t\tpython %(prog)s -f cube_video.mp4 \t\t Provide path to store the video',)
+    parser.add_argument('-f', type=str,nargs='?', default="Cube.mp4", help="The Path to save the file")
+    parser.add_argument('-wv', type=bool, default=False, help="The y coordinate of the Start Node")
+    parser.add_argument('-d', type=int, default=0, help="The x coordinate of the Goal Node")
     
+    
+    args = parser.parse_args()
+    path = args.f
+    view_write = args.wv
+    debug = args.d
+    
+    return [path,view_write,debug]
 # %%
 def process_video():
     frames = []
@@ -238,6 +248,7 @@ def process_video():
             else:
                 if(previous_tag):
                     final = paste_img(previous_tag,testudo,img)
+                    out.write(final)
         else:
             break
         print(len(frames)) 

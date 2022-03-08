@@ -1,27 +1,8 @@
 # %%
 import cv2 as cv
-
-from matplotlib import pyplot as plt
-import networkx as nx
 import itertools
 import numpy as np
-import math
-
-# %%
-nonoise_vid = cv.VideoCapture('./1tagvideo.mp4')
-if (nonoise_vid.isOpened() == False):
-	print("Error opening the video file")
-else:
-  # Get frame rate information
-
-  fps = int(nonoise_vid.get(5))
-  print("Frame Rate : ",fps,"frames per second")	
-
-  # Get frame count
-  frame_count = nonoise_vid.get(7)
-  print("Frame count : ", frame_count)
-
-
+import argparse
 # %%
 
 
@@ -59,9 +40,7 @@ def detect_rectangles(corners:list()):
 
 # %%
 def plot_polygon(img, lov):
-    print(lov)
     for i in lov:
-        print(i)
         pts = np.array(i, np.int32)
         pts = pts.reshape((-1,1,2))
         img_rect = cv.polylines(img,[pts],True,(0,255,255))
@@ -82,7 +61,39 @@ def plot_circles(img, lop):
         print(i)
         img_rect = cv.circle(img_rect,i,2,(0,255,0),2)
     return img_rect
+def plot_cube(img,projected_corners,thickness=4):
+    img_rect = np.copy(img)
+    lower_points, higher_points = np.array_split(projected_corners,2)
+    lower_points = np.resize(lower_points,(4,2))
+    higher_points = np.resize(higher_points,(4,2))
+    img_rect = cv.polylines(img_rect,[lower_points],True,(0,255,255),thickness)
+    img_rect = cv.polylines(img_rect,[higher_points],True,(0,255,255),thickness)
+    for n in zip(lower_points,higher_points):
+        l,h = n
+        img_rect = cv.polylines(img_rect,[np.array([l,h])],True,(0,255,255),thickness)
+    return img_rect
+    
 # %%
+def calculate_rotation(K,homography):
+    
+    B_tilde = np.linalg.inv(K)@homography
+    h1,h2,h3 = np.array_split(homography,3,axis=1)
+    lb = (np.linalg.norm(np.linalg.inv(K)@h1)+np.linalg.norm(np.linalg.inv(K)@h2))/2
+    lb = 1/lb
+    if(np.linalg.det(B_tilde)<0):
+        B = -lb*B_tilde
+    else:
+        B = lb*B_tilde
+    b1,b2,t = np.array_split(B,3,axis=1)
+    # r1,r2 = b1/np.linalg.norm(b1),b2/np.linalg.norm(b2)
+    b3 = np.cross(b1.T,b2.T)
+    # r3 = b3/np.linalg.norm(b3)
+    r1, r2, r3 = b1, b2, b3
+    rotation_matrix = np.hstack((r1,r2,r3.T))
+
+    perspective_transform = (K@np.hstack((rotation_matrix,t)))
+    
+    return t,rotation_matrix,perspective_transform
 ## Calculate Homography
 def calculate_homography(world_corners,image_corner):
     ## 4 points in the world frame
@@ -142,9 +153,9 @@ def decode_tag(tag):
 # %%
 ## Warp the image with the given size and template image
 def Warping(src, homography, size, template = None):
-    Yt, Xt = np.indices((size[0], size[1]))
+    y, x = np.indices((size[0], size[1]))
     ## Create an array with values equal to coordinates of the point
-    cam_pts = np.stack((Xt.ravel(), Yt.ravel(), np.ones(Xt.size)))
+    cam_pts = np.stack((x.ravel(), y.ravel(), np.ones(x.size)))
     h_inv = np.linalg.inv(homography)
     
     ## Find the transformation that maps the camera point to the world point
@@ -153,20 +164,20 @@ def Warping(src, homography, size, template = None):
     cam_pts /= cam_pts[2,:]
 
     ## Floor the float values to a interger value
-    Xi, Yi = cam_pts[:2,:].astype(int)
+    xw, yw = cam_pts[:2,:].astype(int)
     # padding
-    Xi[Xi >=  src.shape[1]] = src.shape[1]
-    Xi[Xi < 0] = 0
-    Yi[Yi >=  src.shape[0]] = src.shape[0]
-    Yi[Yi < 0] = 0
+    xw[xw >=  src.shape[1]] = src.shape[1]
+    xw[xw < 0] = 0
+    yw[yw >=  src.shape[0]] = src.shape[0]
+    yw[yw < 0] = 0
     ## If a template image is provided then map that to world frame
     if (type(template)==np.ndarray):
-        src[Yi, Xi, :] = template[Yt.ravel(), Xt.ravel(), :]
+        src[yw, xw, :] = template[y.ravel(), x.ravel(), :]
         return src
     ## Map the world frame to the given the camera frame
     else:
         warped_image = np.zeros((size[0],size[1], 3))
-        warped_image[Yt.ravel(), Xt.ravel(), :]= src[Yi, Xi, :]
+        warped_image[y.ravel(), x.ravel(), :]= src[yw, xw, :]
         return warped_image
 # %%
  ## Sort the points so that the are in anti clockwise 
@@ -193,45 +204,50 @@ def paste_img(tag_info,img,src):
     ## Smoothen out the image to eliminate holes
     final = cv.medianBlur(final,3)
     return final
+def write_video(file_path, frames, fps):
+    w, h, c = frames[0].shape
+    fourcc = cv.VideoWriter_fourcc(*"MJPG")
+    writer = cv.VideoWriter(file_path, fourcc, fps, (w, h))
 
-def calculate_rotation(K,homography):
+    for i,frame in enumerate(frames):
+        print("Writing Frame: ",i)
+        writer.write(frame)
+    writer.release() 
+def get_inputs():
+    parser = argparse.ArgumentParser(description='Projects a 3D cube onto an AR Tag',usage='\t\t\tpython %(prog)s -d 1 -\t\t\tDebug level 1\n\t\t\tpython %(prog)s -wv 1 \t\tOnly view each frame without saving video\n\t\t\tpython %(prog)s -f cube_video.mp4 \t\t Provide path to store the video',)
+    parser.add_argument('-f', type=str,nargs='?', default="Cube.mp4", help="The Path to save the file")
+    parser.add_argument('-wv', type=bool, default=False, help="The y coordinate of the Start Node")
+    parser.add_argument('-d', type=int, default=0, help="The x coordinate of the Goal Node")
     
-    B_tilde = np.linalg.inv(K)@homography
-    h1,h2,h3 = np.array_split(homography,3,axis=1)
-    lb = (np.linalg.norm(np.linalg.inv(K)@h1)+np.linalg.norm(np.linalg.inv(K)@h2))/2
-    lb = 1/lb
-    if(np.linalg.det(B_tilde)<0):
-        B = -lb*B_tilde
-    else:
-        B = lb*B_tilde
-    b1,b2,t = np.array_split(B,3,axis=1)
-    # r1,r2 = b1/np.linalg.norm(b1),b2/np.linalg.norm(b2)
-    b3 = np.cross(b1.T,b2.T)
-    # r3 = b3/np.linalg.norm(b3)
-    r1, r2, r3 = b1, b2, b3
-    rotation_matrix = np.hstack((r1,r2,r3.T))
-
-    perspective_transform = (K@np.hstack((rotation_matrix,t)))
-    print(rotation_matrix,t)
-    return t,rotation_matrix,perspective_transform
     
-
+    args = parser.parse_args()
+    path = args.f
+    view_write = args.wv
+    debug = args.d
+    
+    return [path,view_write,debug]
 # %%
-def process_video():
+def process_video(K,view_write,debug_level=0):
+    nonoise_vid = cv.VideoCapture('./1tagvideo.mp4')
+    if (nonoise_vid.isOpened() == False):
+        print("Error opening the video file")
+        return None
+    else:
+    # Get frame rate information
+        fps = int(nonoise_vid.get(5))
+        print("Frame Rate : ",fps,"frames per second")	
+        # Get frame count
+        frame_count = nonoise_vid.get(7)
+        print("Frame count : ", frame_count)
+
     frames = []
-    out = cv.VideoWriter('outpy.avi',cv.VideoWriter_fourcc('M','J','P','G'), 26, (1920,1080))
-    testudo  =cv.imread('testudo.jpg')
     previous_tag=None
-    K = np.array([[1346.100595,0,932.1633975],
-    [0,1355.933136,654.8986796],
-    [0,0,1]])
     while(nonoise_vid.isOpened()):
         # nonoise_vid.read() methods returns a tuple, first element is a bool 
         # and the second is frame
         ret, frame = nonoise_vid.read()
         if ret == True:
         #Split the channels and invert color of the frame as we are only interested in the red channel
-            frames.append(frame)
             sharpen = np.array([[0,-1,0], [-1,5,-1], [0,-1,0]])## Sharpen the image to hightlight edges
             img = frame #assign the frame of interest
             img_modify = cv.medianBlur(img, 5) # Blur the image slightly to remove noise
@@ -266,51 +282,55 @@ def process_video():
                     msg,ori,idx = decode_tag(warped_img)
                 except:
                     continue
-                ## Add it to the list of tags
-                tags.append([msg,ori,idx,max_frame_size,homo])
                 
                 ## For every quad that returned a valid tag info superimpose a image
-                tag = tags[-1]
-                if(np.isnan(tag[0]).any() or type(tag[1])==type(None) or type(tag[2])==type(None)):
+                if(np.isnan(msg).any() or type(ori)==type(None) or type(idx)==type(None)):
                     continue
-                if(tag[2]!=7):
+                if(idx!=7):
                     continue
-                # cv.imshow("cube",warped_img)
-                # cv.waitKey()
-                # cv.destroyAllWindows()
-                # points_to_project = np.float32([[0, 0, 0],[tag[3], 0, 0],[tag[3], tag[3], 0], [0, tag[3], 0],[0, 0, 0], 
-                #                                     [0, 0, -tag[3]], [tag[3], 0, -tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]], [tag[3], tag[3], -tag[3]],
-                #                                     [tag[3],tag[3],0],[tag[3],tag[3],-tag[3]],[tag[3],0,-tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]],[0, 0, -tag[3]]])
-                points = np.array([[[0,0,0],[tag[3],0,0],[tag[3],tag[3],0],[0,tag[3],0],\
-                [0,0,-tag[3]],[tag[3],0,-tag[3]],[tag[3],tag[3],-tag[3]],[0,tag[3],-tag[3]]]],dtype = np.float64)
+                ## Save the tag for future use
+                previous_tag = [msg,ori,idx,max_frame_size,tvec,rvec]
+                ## Define the points that is to be projected to form the cube, they are the border of the tag
+                points = np.array([[[0,0,0],[max_frame_size,0,0],[max_frame_size,max_frame_size,0],[0,max_frame_size,0],\
+                    [0,0,-max_frame_size],[max_frame_size,0,-max_frame_size],[max_frame_size,max_frame_size,-max_frame_size],\
+                    [0,max_frame_size,-max_frame_size]]],dtype = np.float64)
+                ## Obtain the corner of the cube in 2D projection 
                 projected_corners,_ = cv.projectPoints(points, rvec, tvec, K, np.zeros((1, 4)))
                 projected_corners = projected_corners.astype(int)
-                img_rect = np.copy(img)
-                img_rect = cv.polylines(img,[projected_corners],True,(0,255,255),4)
-                # img_rect = plot_polygon(img_rect,projected_corners)
-                # out.write(final)
-                cv.imshow("cube",img_rect)
-                cv.waitKey(100000)
-                cv.destroyAllWindows()
+                ## Plot the cube onto the image
+                
+                final = plot_cube(img,projected_corners)
+                frames.append(final)
+                if(debug_level>=1 or view_write):
+                    cv.imshow("cube",final)
+                    cv.waitKey()
+                    cv.destroyAllWindows()
                 break
             else:
                 if(previous_tag):
-                    tag = previous_tag
-                    points_to_project = np.float32([[0, 0, 0],[tag[3], 0, 0],[tag[3], tag[3], 0], [0, tag[3], 0],[0, 0, 0], 
-                                                    [0, 0, -tag[3]], [tag[3], 0, -tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]], [tag[3], tag[3], -tag[3]],
-                                                    [tag[3],tag[3],0],[tag[3],tag[3],-tag[3]],[tag[3],0,-tag[3]],[tag[3],0,0],[tag[3],0,-tag[3]],[0, 0, -tag[3]]])
-                    # points = np.array([[[0,0,0],[tag[3],0,0],[tag[3],tag[3],0],[0,tag[3],0],\
-                    # [0,0,-1],[tag[3],0,-1],[tag[3],tag[3],-1],[0,tag[3],-1]]],dtype = np.float64)
-                    projected_corners,_ = cv.projectPoints(points_to_project, rvec, tvec, K, np.zeros((1, 4)))
-                    img_rect = np.copy(img)
-                    img_rect = plot_polygon(img_rect,projected_corners)
-                    # out.write(final)
-                    cv.imshow("cube",img_rect)
-                    cv.waitKey()
-                    cv.destroyAllWindows()
+                    msg,ori,idx,max_frame_size,tvec,rvec = previous_tag
+                    points = np.array([[[0,0,0],[max_frame_size,0,0],[max_frame_size,max_frame_size,0],[0,max_frame_size,0],\
+                        [0,0,-max_frame_size],[max_frame_size,0,-max_frame_size],[max_frame_size,max_frame_size,-max_frame_size],\
+                        [0,max_frame_size,-max_frame_size]]],dtype = np.float64)
+                    projected_corners,_ = cv.projectPoints(points, rvec, tvec, K, np.zeros((1, 4)))
+
+                    final = plot_polygon(img,projected_corners)
+                    frames.append(final)
+                    if(debug_level>=1 or view_write):
+                        cv.imshow("cube",final)
+                        cv.waitKey()
+                        cv.destroyAllWindows()
         else:
             break
-        print(len(frames)) 
-        
+        if(debug>=0):
+            print("Currently Processing Frame:", len(frames)) 
+    return np.copy(frames)
 if __name__=="__main__":
-    process_video()
+    path,view_write,debug = get_inputs()
+    K = np.array([[1346.100595,0,932.1633975],
+                [0,1355.933136,654.8986796],
+                [0,0,1]])
+    frames = process_video(K,view_write,debug)
+    if(frames):
+        if(not view_write):
+            write_video(path,frames,26)
